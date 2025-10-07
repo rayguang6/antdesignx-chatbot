@@ -33,10 +33,18 @@ import {
   useXChat,
 } from '@ant-design/x';
 import { Avatar, Button, Flex, type GetProp, Space, Spin, Typography, message } from 'antd';
-import { createStyles } from 'antd-style';
+import type { User } from '@supabase/supabase-js';
 import dayjs from 'dayjs';
+import { useRouter } from 'next/navigation';
 import React, { useEffect, useRef, useState } from 'react';
-import { DEFAULT_CONVERSATIONS_ITEMS, DEFAULT_MESSAGES_BY_CONV, HOT_TOPICS, DESIGN_GUIDE, SENDER_PROMPTS } from './lib/constants';
+import {
+  DEFAULT_CONVERSATIONS_ITEMS,
+  DEFAULT_MESSAGES_BY_CONV,
+  HOT_TOPICS,
+  DESIGN_GUIDE,
+  SENDER_PROMPTS,
+} from './lib/constants';
+import { supabase } from './lib/supabaseClient';
 import { useStyle } from './styles';
 import markdownit from 'markdown-it';
 
@@ -51,6 +59,10 @@ const Independent: React.FC = () => {
 
   const { styles } = useStyle();
   const abortController = useRef<AbortController>(null);
+  const router = useRouter();
+
+  const [user, setUser] = useState<User | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
   // ==================== State ====================
   // const [messageHistory, setMessageHistory] = useState<Record<string, any>>({});
@@ -64,6 +76,53 @@ const Independent: React.FC = () => {
   const [attachedFiles, setAttachedFiles] = useState<GetProp<typeof Attachments, 'items'>>([]);
 
   const [inputValue, setInputValue] = useState('');
+
+  useEffect(() => {
+    const loadSession = async () => {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+
+      if (!session) {
+        router.replace('/login');
+        return;
+      }
+
+      setUser(session.user);
+      setCheckingAuth(false);
+    };
+
+    void loadSession();
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+
+      if (!session) {
+        router.replace('/login');
+      } else {
+        setCheckingAuth(false);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [router]);
+
+  const handleSignOut = async () => {
+    setCheckingAuth(true);
+    const { error } = await supabase.auth.signOut();
+
+    if (error) {
+      message.error(error.message);
+      setCheckingAuth(false);
+      return;
+    }
+
+    message.success('Signed out successfully.');
+  };
 
   /**
    * 🔔 Please replace the BASE_URL, PATH, MODEL, API_KEY with your own values.
@@ -443,7 +502,40 @@ const Independent: React.FC = () => {
     }
   }, [messages]);
 
-  
+  const userSummary = user ? (
+    <Flex
+      align="center"
+      justify="space-between"
+      style={{
+        padding: '16px calc(calc(100% - 700px) /2)',
+        borderBottom: '1px solid #f0f0f0',
+        gap: 16,
+      }}
+    >
+      <Flex align="center" gap={12}>
+        <Avatar size={40}>{user.email?.[0]?.toUpperCase() ?? 'U'}</Avatar>
+        <div>
+          <Typography.Text strong>{user.email ?? 'Authenticated user'}</Typography.Text>
+          <Typography.Paragraph style={{ marginBottom: 0 }} type="secondary">
+            User ID: {user.id}
+          </Typography.Paragraph>
+        </div>
+      </Flex>
+      <Button onClick={handleSignOut}>Sign out</Button>
+    </Flex>
+  ) : null;
+
+  if (checkingAuth) {
+    return (
+      <Flex align="center" justify="center" style={{ minHeight: '100vh' }}>
+        <Spin size="large" />
+      </Flex>
+    );
+  }
+
+  if (!user) {
+    return null;
+  }
 
   // ==================== Render =================
   return (
@@ -451,6 +543,7 @@ const Independent: React.FC = () => {
       {chatSider}
 
       <div className={styles.chat}>
+        {userSummary}
         {chatList}
         {chatSender}
       </div>

@@ -20,6 +20,17 @@ You can start editing the page by modifying `app/page.tsx`. The page auto-update
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
+## Supabase authentication setup
+
+Authentication is powered by [Supabase](https://supabase.com/). Provide the following environment variables before starting the development server:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
+NEXT_PUBLIC_SUPABASE_ANON_KEY="YOUR_PUBLIC_ANON_KEY"
+```
+
+Only email / password sign-in is enabled—user registration should be managed directly from the Supabase dashboard. Once the environment variables are configured and the dev server is running, visit `/login` to authenticate and access the protected chatbot interface.
+
 ## Learn More
 
 To learn more about Next.js, take a look at the following resources:
