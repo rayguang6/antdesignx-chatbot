@@ -47,11 +47,21 @@ import {
 import { supabase } from './lib/supabaseClient';
 import { useStyle } from './styles';
 import markdownit from 'markdown-it';
+import { fetchConversations, createConversation } from './chat/lib/db/conversations'
+import { fetchMessages, insertMessage } from './chat/lib/db/messages'
+import { MessageInfo } from '@ant-design/x/es/use-x-chat';
+
 
 type BubbleDataType = {
   role: string;
   content: string;
 };
+
+type ConversationItem = {
+  key: string
+  label: string
+  group: string
+}
 
 
 const Independent: React.FC = () => {
@@ -66,17 +76,21 @@ const Independent: React.FC = () => {
 
   // ==================== State ====================
   // const [messageHistory, setMessageHistory] = useState<Record<string, any>>({});
-  const [messageHistory, setMessageHistory] = useState<Record<string, any[]>>(DEFAULT_MESSAGES_BY_CONV);
   
+  // const [messageHistory, setMessageHistory] = useState<Record<string, any[]>>(DEFAULT_MESSAGES_BY_CONV);
+  // const [conversations, setConversations] = useState(DEFAULT_CONVERSATIONS_ITEMS);
+  // const [curConversation, setCurConversation] = useState(DEFAULT_CONVERSATIONS_ITEMS[0].key);
+  const [messageHistory, setMessageHistory] = useState<Record<string, any[]>>({});
+  const [conversations, setConversations] = useState<ConversationItem[]>([]);
+  const [curConversation, setCurConversation] = useState<string | undefined>(undefined);
 
-  const [conversations, setConversations] = useState(DEFAULT_CONVERSATIONS_ITEMS);
-  const [curConversation, setCurConversation] = useState(DEFAULT_CONVERSATIONS_ITEMS[0].key);
 
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<GetProp<typeof Attachments, 'items'>>([]);
 
   const [inputValue, setInputValue] = useState('');
 
+  // ==================== Load Session ====================
   useEffect(() => {
     const loadSession = async () => {
       const {
@@ -111,6 +125,28 @@ const Independent: React.FC = () => {
     };
   }, [router]);
 
+  // ==================== Load Conversations ====================
+  useEffect(() => {
+    if (!user) return;
+    (async () => {
+      try {
+        const rows = await fetchConversations(user.id)
+        const formatted = rows.map((r) => ({
+          key: r.id,
+          label: r.title || 'Untitled',
+          group: dayjs(r.created_at).format('YYYY-MM-DD'),
+        }))
+        setConversations(formatted)
+  
+        // if (formatted.length) setCurConversation(formatted[0].key)
+      } catch (err: any) {
+        message.error('Failed to load conversations')
+        console.error(err)
+      }
+    })()
+  }, [user])
+  
+
   const handleSignOut = async () => {
     setCheckingAuth(true);
     const { error } = await supabase.auth.signOut();
@@ -123,6 +159,32 @@ const Independent: React.FC = () => {
 
     message.success('Signed out successfully.');
   };
+
+  const handleNewConversation = async () => {
+    if (agent.isRequesting()) {
+      message.error('Request in progress. Abort or wait before creating a new chat.');
+      return;
+    }
+    if (!user) return;
+  
+    try {
+      const row = await createConversation(user.id, `New Conversation ${conversations.length + 1}`);
+  
+      const item = {
+        key: row.id,
+        label: row.title || 'Untitled',
+        group: dayjs(row.created_at).format('YYYY-MM-DD'),
+      };
+  
+      setConversations([item, ...conversations]);
+      setCurConversation(row.id);
+      setMessages([]); // fresh chat area
+    } catch (err: any) {
+      console.error(err);
+      message.error('Failed to create conversation.');
+    }
+  };
+  
 
   /**
    * 🔔 Please replace the BASE_URL, PATH, MODEL, API_KEY with your own values.
@@ -201,19 +263,59 @@ const Independent: React.FC = () => {
   });
 
   // ==================== Event ====================
-  const onSubmit = (val: string) => {
-    if (!val) return;
+  // const onSubmit = (val: string) => {
+  //   if (!val) return;
 
+  //   if (loading) {
+  //     message.error('Request is in progress, please wait for the request to complete.');
+  //     return;
+  //   }
+
+  //   onRequest({
+  //     stream: true,
+  //     message: { role: 'user', content: val },
+  //   });
+  // };
+  const onSubmit = async (val: string) => {
+    if (!val) return;
+  
     if (loading) {
-      message.error('Request is in progress, please wait for the request to complete.');
+      message.error('Request is in progress, please wait.');
       return;
     }
-
+    if (!user) return;
+  
+    try {
+      // If no conversation selected yet, auto-create one
+      let convId = curConversation;
+      if (!convId) {
+        const row = await createConversation(user.id, `New Conversation ${conversations.length + 1}`);
+        const item = {
+          key: row.id,
+          label: row.title || 'Untitled',
+          group: dayjs(row.created_at).format('YYYY-MM-DD'),
+        };
+        setConversations([item, ...conversations]);
+        setCurConversation(row.id);
+        setMessages([]);
+        convId = row.id;
+      }
+  
+      // Save the user's message to DB
+      await insertMessage(convId!, 'user', val);
+    } catch (err) {
+      console.error(err);
+      // still proceed to stream the reply so UX isn't blocked
+    }
+  
     onRequest({
       stream: true,
       message: { role: 'user', content: val },
     });
+  
+    setInputValue('');
   };
+  
 
   // ==================== Nodes ====================
   const chatSider = (
@@ -231,7 +333,8 @@ const Independent: React.FC = () => {
       </div>
 
       {/* 🌟 添加会话 */}
-      <Button
+
+      {/* <Button
         onClick={() => {
           if (agent.isRequesting()) {
             message.error(
@@ -257,7 +360,16 @@ const Independent: React.FC = () => {
         icon={<PlusOutlined />}
       >
         New Conversation
+      </Button> */}
+      <Button
+        onClick={handleNewConversation}
+        type="link"
+        className={styles.addBtn}
+        icon={<PlusOutlined />}
+        >
+          New Conversation
       </Button>
+
 
       {/* 🌟 会话管理 */}
       <Conversations
@@ -265,14 +377,33 @@ const Independent: React.FC = () => {
         className={styles.conversations}
         activeKey={curConversation}
         onActiveChange={async (val) => {
-          abortController.current?.abort();
-          // The abort execution will trigger an asynchronous requestFallback, which may lead to timing issues.
-          // In future versions, the sessionId capability will be added to resolve this problem.
-          setTimeout(() => {
-            setCurConversation(val);
-            setMessages(messageHistory?.[val] || []);
-          }, 100);
+          try {
+            abortController.current?.abort()
+            setCurConversation(val)
+        
+            const rows = await fetchMessages(val)
+            const bubbles = rows.map((m) => ({
+              id: m.id,
+              status: 'idle',
+              message: { role: m.role, content: m.content },
+            }))
+        
+            setMessages(bubbles as MessageInfo<BubbleDataType>[])
+          } catch (err: any) {
+            console.error(err)
+            message.error('Failed to load messages')
+          }
         }}
+        
+        // onActiveChange={async (val) => {
+        //   abortController.current?.abort();
+        //   // The abort execution will trigger an asynchronous requestFallback, which may lead to timing issues.
+        //   // In future versions, the sessionId capability will be added to resolve this problem.
+        //   setTimeout(() => {
+        //     setCurConversation(val);
+        //     setMessages(messageHistory?.[val] || []);
+        //   }, 100);
+        // }}
         groupable
         styles={{ item: { padding: '0 8px' } }}
         menu={(conversation) => ({
@@ -412,6 +543,7 @@ const Independent: React.FC = () => {
       )}
     </div>
   );
+  
   const senderHeader = (
     <Sender.Header
       title="Upload File"
@@ -484,17 +616,17 @@ const Independent: React.FC = () => {
     </>
   );
 
-  useEffect(() => {
-    if (!curConversation) return;
-    const initial = messageHistory[curConversation] || [];
-    setMessages(initial);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // useEffect(() => {
+  //   if (!curConversation) return;
+  //   const initial = messageHistory[curConversation] || [];
+  //   setMessages(initial);
+  //   // eslint-disable-next-line react-hooks/exhaustive-deps
+  // }, []);
   
 
   useEffect(() => {
     // history mock
-    if (messages?.length) {
+    if (messages?.length && curConversation) {
       setMessageHistory((prev) => ({
         ...prev,
         [curConversation]: messages,
