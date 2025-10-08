@@ -90,6 +90,12 @@ const Independent: React.FC = () => {
 
   const [inputValue, setInputValue] = useState('');
 
+  // to save chunks from assistant
+  const pendingAssistant = useRef<string>('');
+  const streamConvRef = useRef<string | null>(null);
+  const prevLoadingRef = useRef<boolean>(false);
+
+
   // ==================== Load Session ====================
   useEffect(() => {
     const loadSession = async () => {
@@ -225,22 +231,26 @@ const Independent: React.FC = () => {
       const { originMessage, chunk } = info || {};
       let currentContent = '';
       let currentThink = '';
+    
       try {
-        if (chunk?.data && !chunk?.data.includes('DONE')) {
-          const message = JSON.parse(chunk?.data);
+        if (chunk?.data && !chunk.data.includes('DONE')) {
+          const message = JSON.parse(chunk.data);
           currentThink = message?.choices?.[0]?.delta?.reasoning_content || '';
           currentContent = message?.choices?.[0]?.delta?.content || '';
         }
       } catch (error) {
         console.error(error);
       }
-
-        // --- simple version (no <think>) ---
-        const content = `${originMessage?.content || ''}${currentContent || ''}`;
-
-
+    
+      // accumulate assistant tokens (visible content only) for DB save after stream ends
+      if (currentContent) {
+        pendingAssistant.current += currentContent;
+      }
+    
+      // --- simple version (no <think>) ---
+      const content = `${originMessage?.content || ''}${currentContent || ''}`;
+    
       // let content = '';
-
       // if (!originMessage?.content && currentThink) {
       //   content = `<think>${currentThink}`;
       // } else if (
@@ -252,11 +262,13 @@ const Independent: React.FC = () => {
       // } else {
       //   content = `${originMessage?.content || ''}${currentThink}${currentContent}`;
       // }
+    
       return {
         content: content,
         role: 'assistant',
       };
     },
+    
     resolveAbortController: (controller) => {
       abortController.current = controller;
     },
@@ -278,43 +290,36 @@ const Independent: React.FC = () => {
   // };
   const onSubmit = async (val: string) => {
     if (!val) return;
-  
-    if (loading) {
-      message.error('Request is in progress, please wait.');
-      return;
-    }
+    if (loading) { message.error('Request is in progress, please wait.'); return; }
     if (!user) return;
   
     try {
-      // If no conversation selected yet, auto-create one
+      // ensure we have a conversation id
       let convId = curConversation;
       if (!convId) {
         const row = await createConversation(user.id, `New Conversation ${conversations.length + 1}`);
-        const item = {
-          key: row.id,
-          label: row.title || 'Untitled',
-          group: dayjs(row.created_at).format('YYYY-MM-DD'),
-        };
+        const item = { key: row.id, label: row.title || 'Untitled', group: dayjs(row.created_at).format('YYYY-MM-DD') };
         setConversations([item, ...conversations]);
         setCurConversation(row.id);
         setMessages([]);
         convId = row.id;
       }
   
-      // Save the user's message to DB
+      // 🔑 mark stream context + reset assistant buffer
+      streamConvRef.current = convId!;
+      pendingAssistant.current = '';
+  
+      // save the user's message first
       await insertMessage(convId!, 'user', val);
     } catch (err) {
       console.error(err);
-      // still proceed to stream the reply so UX isn't blocked
+      // continue so the UX still streams a reply
     }
   
-    onRequest({
-      stream: true,
-      message: { role: 'user', content: val },
-    });
-  
+    onRequest({ stream: true, message: { role: 'user', content: val } });
     setInputValue('');
   };
+  
   
 
   // ==================== Nodes ====================
@@ -590,6 +595,9 @@ const Independent: React.FC = () => {
         }}
         onChange={setInputValue}
         onCancel={() => {
+          // 👇 don’t save partial assistant replies on abort
+          pendingAssistant.current = '';
+          streamConvRef.current = null;
           abortController.current?.abort();
         }}
         prefix={
@@ -633,6 +641,25 @@ const Independent: React.FC = () => {
       }));
     }
   }, [messages]);
+
+  useEffect(() => {
+    const prev = prevLoadingRef.current;
+    if (prev && !loading) {
+      // stream just finished
+      const final = pendingAssistant.current.trim();
+      const conversationId = streamConvRef.current;
+  
+      if (final && conversationId) {
+        insertMessage(conversationId, 'assistant', final)
+          .catch((e) => console.error('Save assistant failed:', e));
+      }
+  
+      // cleanup
+      pendingAssistant.current = '';
+      streamConvRef.current = null;
+    }
+    prevLoadingRef.current = loading;
+  }, [loading]);
 
   const userSummary = user ? (
     <Flex
