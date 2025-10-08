@@ -32,7 +32,7 @@ import {
   useXAgent,
   useXChat,
 } from '@ant-design/x';
-import { Avatar, Button, Flex, type GetProp, Space, Spin, Typography, message } from 'antd';
+import { Avatar, Button, Flex, type GetProp, Space, Spin, Typography, message, Modal, Input } from 'antd';
 import type { User } from '@supabase/supabase-js';
 import dayjs from 'dayjs';
 import { useRouter } from 'next/navigation';
@@ -47,7 +47,7 @@ import {
 import { supabase } from './lib/supabaseClient';
 import { useStyle } from './styles';
 import markdownit from 'markdown-it';
-import { fetchConversations, createConversation } from './chat/lib/db/conversations'
+import { fetchConversations, createConversation, deleteConversation, renameConversation } from './chat/lib/db/conversations'
 import { fetchMessages, insertMessage } from './chat/lib/db/messages'
 import { MessageInfo } from '@ant-design/x/es/use-x-chat';
 
@@ -94,6 +94,8 @@ const Independent: React.FC = () => {
   const pendingAssistant = useRef<string>('');
   const streamConvRef = useRef<string | null>(null);
   const prevLoadingRef = useRef<boolean>(false);
+
+  const [modal, contextHolder] = Modal.useModal();
 
 
   // ==================== Load Session ====================
@@ -152,6 +154,7 @@ const Independent: React.FC = () => {
     })()
   }, [user])
   
+  // ==================== Handlers ====================
 
   const handleSignOut = async () => {
     setCheckingAuth(true);
@@ -190,6 +193,69 @@ const Independent: React.FC = () => {
       message.error('Failed to create conversation.');
     }
   };
+
+  // Rename
+const handleRenameConversation = (conv: ConversationItem) => {
+  let nextTitle = conv.label;
+
+  modal.confirm({
+    title: 'Rename conversation',
+    content: (
+      <Input
+        autoFocus
+        defaultValue={conv.label}
+        onChange={(e) => (nextTitle = e.target.value)}
+        placeholder="Conversation title"
+      />
+    ),
+    okText: 'Save',
+    onOk: async () => {
+      const clean = (nextTitle ?? '').trim();
+      if (!clean || clean === conv.label) return;
+
+      try {
+        const row = await renameConversation(conv.key, clean);
+        // update local list label
+        setConversations((prev) =>
+          prev.map((i) => (i.key === conv.key ? { ...i, label: row.title || clean } : i)),
+        );
+        message.success('Renamed');
+      } catch (err) {
+        console.error(err);
+        message.error('Failed to rename conversation');
+        throw err; // keep modal open if desired
+      }
+    },
+  });
+};
+
+// Delete
+const handleDeleteConversation = (conv: ConversationItem) => {
+  modal.confirm({
+    title: 'Delete this conversation?',
+    content: 'All messages in this conversation will be permanently removed.',
+    okText: 'Delete',
+    okButtonProps: { danger: true },
+    onOk: async () => {
+      try {
+        await deleteConversation(conv.key);
+        setConversations((prev) => prev.filter((i) => i.key !== conv.key));
+
+        if (curConversation === conv.key) {
+          setCurConversation(undefined);
+          setMessages([]); // clear chat area
+        }
+
+        message.success('Conversation deleted');
+      } catch (err) {
+        console.error(err);
+        message.error('Failed to delete conversation');
+        throw err; // keep modal open if desired
+      }
+    },
+  });
+};
+  
   
 
   /**
@@ -417,25 +483,15 @@ const Independent: React.FC = () => {
               label: 'Rename',
               key: 'rename',
               icon: <EditOutlined />,
+              onClick: () => handleRenameConversation(conversation as ConversationItem),
+
             },
             {
               label: 'Delete',
               key: 'delete',
               icon: <DeleteOutlined />,
               danger: true,
-              onClick: () => {
-                const newList = conversations.filter((item) => item.key !== conversation.key);
-                const newKey = newList?.[0]?.key;
-                setConversations(newList);
-                // The delete operation modifies curConversation and triggers onActiveChange, so it needs to be executed with a delay to ensure it overrides correctly at the end.
-                // This feature will be fixed in a future version.
-                setTimeout(() => {
-                  if (conversation.key === curConversation) {
-                    setCurConversation(newKey);
-                    setMessages(messageHistory?.[newKey] || []);
-                  }
-                }, 200);
-              },
+              onClick: () => handleDeleteConversation(conversation as ConversationItem),
             },
           ],
         })}
@@ -699,6 +755,8 @@ const Independent: React.FC = () => {
   // ==================== Render =================
   return (
     <div className={styles.layout}>
+        {contextHolder}
+
       {chatSider}
 
       <div className={styles.chat}>
